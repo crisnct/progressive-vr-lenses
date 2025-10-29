@@ -1,0 +1,25 @@
+{
+  "rx": {
+    "OD": {"sph": -1.25, "cyl": -0.75, "axis": 170},
+    "OS": {"sph": -1.00, "cyl": -0.50, "axis": 10},
+    "add": 2.00
+  },
+  "frame": {
+    "pdMono": {"OD": 31.5, "OS": 31.5},
+    "fittingHeight": 18.0,
+    "inset": 2.0,
+    "tilt": 10.0,
+    "wrap": 6.0,
+    "vertex": 12.0
+  },
+  "design": {
+    "corridor": "soft",
+    "length": 14.0,
+    "preset": "outdoor"
+  },
+  "headset": {
+    "ipd": 63.0,
+    "fov": {"horizontal": 100.0, "vertical": 90.0},
+    "eyeTexture": {"width": 2048, "height": 2048}
+  }
+}

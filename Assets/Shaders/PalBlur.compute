@@ -1,0 +1,123 @@
+#pragma kernel CSMain
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+
+Texture2D<float4> _SourceTexture;
+RWTexture2D<float4> _PalResultTexture;
+
+Texture2D<float4> _PalRightMap;
+Texture2D<float4> _PalLeftMap;
+Texture2D<float4> _PalRightMagnification;
+Texture2D<float4> _PalLeftMagnification;
+
+Texture2D<float> _PSF_0;
+Texture2D<float> _PSF_1;
+Texture2D<float> _PSF_2;
+Texture2D<float> _PSF_3;
+Texture2D<float> _PSF_4;
+Texture2D<float> _PSF_5;
+Texture2D<float> _PSF_6;
+Texture2D<float> _PSF_7;
+Texture2D<float> _PSF_8;
+Texture2D<float> _PSF_9;
+
+cbuffer Parameters
+{
+    int _EyeIndex;
+    float2 _SourceSize;
+    float _PixelsPerDegree;
+    float _NearDistance;
+    float _IntermediateDistance;
+    float _Distance;
+}
+
+static const int KERNEL_COUNT = 10;
+
+struct PsfSample
+{
+    Texture2D<float> texture;
+    float weight;
+};
+
+float3 DecodeLensData(float4 encoded)
+{
+    return float3(encoded.r, encoded.g, encoded.b);
+}
+
+float2 DecodeMagnification(float4 encoded)
+{
+    return encoded.xy;
+}
+
+float ComputeDefocus(float power, float objectDistance)
+{
+    if (objectDistance <= 0.0)
+        return 0.0;
+
+    return power - (1.0 / objectDistance);
+}
+
+float ComputeBlurRadius(float defocus, float pixelsPerDegree)
+{
+    const float kScale = 0.45f;
+    return abs(defocus) * kScale * pixelsPerDegree;
+}
+
+float4 SampleGaussian(Texture2D<float4> source, int2 coord, float radius)
+{
+    float2 uv = (coord + 0.5) / _SourceSize;
+    float2 offsets[4] = {
+        float2(-1, 0),
+        float2(1, 0),
+        float2(0, -1),
+        float2(0, 1)
+    };
+
+    float4 accum = source[coord];
+    float weight = 1.0;
+
+    [unroll]
+    for (int i = 0; i < 4; ++i)
+    {
+        float2 sampleUv = uv + offsets[i] * radius / _SourceSize;
+        accum += source.SampleLevel(sampler_PointClamp, sampleUv, 0);
+        weight += 1.0;
+    }
+
+    return accum / weight;
+}
+
+float4 ApplyMagnification(float4 color, float2 magnification, int2 coord)
+{
+    float2 offset = magnification;
+    int2 shifted = coord + int2(offset * _SourceSize);
+    shifted = clamp(shifted, int2(0, 0), int2(_SourceSize) - 1);
+    return _SourceTexture[shifted];
+}
+
+[numthreads(32, 32, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _SourceSize.x || id.y >= _SourceSize.y)
+        return;
+
+    Texture2D<float4> palMap = _EyeIndex == 0 ? _PalRightMap : _PalLeftMap;
+    Texture2D<float4> palMag = _EyeIndex == 0 ? _PalRightMagnification : _PalLeftMagnification;
+
+    float4 lensData = palMap[int2(id.xy)];
+    float3 decoded = DecodeLensData(lensData);
+    float power = decoded.x;
+    float cyl = decoded.y;
+
+    float4 color = _SourceTexture[int2(id.xy)];
+
+    float defocusNear = ComputeDefocus(power, _NearDistance);
+    float blurRadiusNear = ComputeBlurRadius(defocusNear, _PixelsPerDegree);
+
+    float4 blurred = SampleGaussian(_SourceTexture, int2(id.xy), blurRadiusNear);
+
+    float2 magnification = DecodeMagnification(palMag[int2(id.xy)]);
+    float4 warped = ApplyMagnification(blurred, magnification, int2(id.xy));
+
+    _PalResultTexture[int2(id.xy)] = lerp(color, warped, saturate(abs(defocusNear) * 0.5));
+}
