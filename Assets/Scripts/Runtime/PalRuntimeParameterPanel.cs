@@ -2,34 +2,43 @@ using System;
 using System.Collections.Generic;
 using ProgressiveVrLenses.Optics;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace ProgressiveVrLenses.Runtime
 {
     /// <summary>
-    /// Builds a lightweight runtime UI that lets users adjust PAL parameters while the experience is running.
+    /// Displays a runtime panel that always stays visible in the top-right corner.
+    /// Users can navigate with the keyboard and adjust PAL parameters on the fly.
     /// </summary>
     public class PalRuntimeParameterPanel : MonoBehaviour
     {
         [Header("Simulation")]
-        [Tooltip("Simulation controller to receive runtime parameter updates.")]
+        [Tooltip("Simulation controller that will receive runtime parameter updates.")]
         public PalSimulationController simulationController;
-        [Tooltip("Automatically search for a PalSimulationController in the scene when none is assigned.")]
+        [Tooltip("Search automatically for a PalSimulationController when none is assigned.")]
         public bool autoFindSimulation = true;
 
         [Header("UI")]
-        public KeyCode toggleKey = KeyCode.F1;
-        public Vector2 panelPosition = new Vector2(24f, -24f);
-        public Vector2 panelSize = new Vector2(320f, 520f);
+        [Tooltip("Panel size in pixels.")]
+        public Vector2 panelSize = new Vector2(360f, 560f);
+        [Tooltip("Offset from the top-right corner of the screen.")]
+        public Vector2 panelMargin = new Vector2(24f, 24f);
+        [Tooltip("Heading text displayed at the top of the panel.")]
         public string panelTitle = "PAL Parameters";
+        [Tooltip("Time before held arrow keys start repeating adjustments.")]
+        public float initialRepeatDelay = 0.35f;
+        [Tooltip("Repeat rate while holding an arrow key.")]
+        public float repeatDelay = 0.12f;
 
         private PalProfileParameters _runtimeParameters;
         private GameObject _canvasRoot;
-        private GameObject _panelRoot;
-        private readonly List<SliderBinding> _bindings = new List<SliderBinding>();
-        private bool _applying;
+        private RectTransform _panelRect;
         private Font _uiFont;
+
+        private readonly List<ParameterEntry> _entries = new List<ParameterEntry>();
+        private int _selectedIndex;
+        private int _adjustDirection;
+        private float _nextAdjustTime;
 
         private void Start()
         {
@@ -38,23 +47,22 @@ namespace ProgressiveVrLenses.Runtime
 
             if (simulationController == null)
             {
-                Debug.LogWarning("PalRuntimeParameterPanel: could not locate PalSimulationController. Runtime UI disabled.");
+                Debug.LogWarning("PalRuntimeParameterPanel: no PalSimulationController found. Runtime UI disabled.");
                 enabled = false;
                 return;
             }
 
             CreateRuntimeParameters();
             BuildUi();
-            RefreshUi();
+            RefreshUi(true);
             ApplyParameters();
         }
 
         private void Update()
         {
-            if (_panelRoot != null && Input.GetKeyDown(toggleKey))
-            {
-                _panelRoot.SetActive(!_panelRoot.activeSelf);
-            }
+            HandleSelectionInput();
+            HandleAdjustmentInput();
+            RefreshUi(false);
         }
 
         private void OnDestroy()
@@ -90,19 +98,66 @@ namespace ProgressiveVrLenses.Runtime
 
         private void BuildUi()
         {
-            EnsureEventSystem();
             _uiFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
 
             _canvasRoot = new GameObject("PalRuntimeCanvas");
+            DontDestroyOnLoad(_canvasRoot);
+
             var canvas = _canvasRoot.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             _canvasRoot.AddComponent<CanvasScaler>();
             _canvasRoot.AddComponent<GraphicRaycaster>();
 
-            _panelRoot = CreatePanel(canvas.transform);
-            CreateHeader(_panelRoot.transform);
+            var panelObj = new GameObject("PalParameterPanel");
+            panelObj.transform.SetParent(canvas.transform, false);
+            _panelRect = panelObj.AddComponent<RectTransform>();
+            _panelRect.anchorMin = new Vector2(1f, 1f);
+            _panelRect.anchorMax = new Vector2(1f, 1f);
+            _panelRect.pivot = new Vector2(1f, 1f);
+            _panelRect.anchoredPosition = new Vector2(-panelMargin.x, -panelMargin.y);
+            _panelRect.sizeDelta = panelSize;
 
-            AddSlider("Right Eye Sph", -8f, 4f, 0.25f,
+            var background = panelObj.AddComponent<Image>();
+            background.color = new Color(0f, 0f, 0f, 0.7f);
+
+            var vertical = panelObj.AddComponent<VerticalLayoutGroup>();
+            vertical.padding = new RectOffset(12, 12, 12, 12);
+            vertical.spacing = 8f;
+            vertical.childAlignment = TextAnchor.UpperLeft;
+
+            CreateHeader(panelObj.transform);
+            CreateInstructions(panelObj.transform);
+            CreateParameterEntries(panelObj.transform);
+            UpdateSelectionHighlight();
+        }
+
+        private void CreateHeader(Transform parent)
+        {
+            var headerObj = new GameObject("Header");
+            headerObj.transform.SetParent(parent, false);
+            var text = headerObj.AddComponent<Text>();
+            text.font = _uiFont;
+            text.fontSize = 22;
+            text.alignment = TextAnchor.MiddleLeft;
+            text.color = Color.white;
+            text.text = panelTitle;
+        }
+
+        private void CreateInstructions(Transform parent)
+        {
+            var instructionsObj = new GameObject("Instructions");
+            instructionsObj.transform.SetParent(parent, false);
+            var text = instructionsObj.AddComponent<Text>();
+            text.font = _uiFont;
+            text.fontSize = 12;
+            text.alignment = TextAnchor.UpperLeft;
+            text.color = new Color(1f, 1f, 1f, 0.7f);
+            text.text = "Use Up/Down to select a parameter.\nUse Left/Right to decrease/increase.\nValues apply instantly.";
+        }
+
+        private void CreateParameterEntries(Transform parent)
+        {
+            AddParameter(parent, "Right Eye Sph", -8f, 4f, 0.25f,
                 delegate { return _runtimeParameters.RightEye.Sph; },
                 delegate(float value)
                 {
@@ -112,7 +167,7 @@ namespace ProgressiveVrLenses.Runtime
                 },
                 FormatDiopters);
 
-            AddSlider("Right Eye Cyl", -4f, 0f, 0.25f,
+            AddParameter(parent, "Right Eye Cyl", -4f, 0f, 0.25f,
                 delegate { return _runtimeParameters.RightEye.Cyl; },
                 delegate(float value)
                 {
@@ -122,7 +177,7 @@ namespace ProgressiveVrLenses.Runtime
                 },
                 FormatDiopters);
 
-            AddSlider("Right Eye Axis", 0f, 180f, 1f,
+            AddParameter(parent, "Right Eye Axis", 0f, 180f, 1f,
                 delegate { return _runtimeParameters.RightEye.Axis; },
                 delegate(float value)
                 {
@@ -132,7 +187,7 @@ namespace ProgressiveVrLenses.Runtime
                 },
                 FormatAngle);
 
-            AddSlider("Left Eye Sph", -8f, 4f, 0.25f,
+            AddParameter(parent, "Left Eye Sph", -8f, 4f, 0.25f,
                 delegate { return _runtimeParameters.LeftEye.Sph; },
                 delegate(float value)
                 {
@@ -142,7 +197,7 @@ namespace ProgressiveVrLenses.Runtime
                 },
                 FormatDiopters);
 
-            AddSlider("Left Eye Cyl", -4f, 0f, 0.25f,
+            AddParameter(parent, "Left Eye Cyl", -4f, 0f, 0.25f,
                 delegate { return _runtimeParameters.LeftEye.Cyl; },
                 delegate(float value)
                 {
@@ -152,7 +207,7 @@ namespace ProgressiveVrLenses.Runtime
                 },
                 FormatDiopters);
 
-            AddSlider("Left Eye Axis", 0f, 180f, 1f,
+            AddParameter(parent, "Left Eye Axis", 0f, 180f, 1f,
                 delegate { return _runtimeParameters.LeftEye.Axis; },
                 delegate(float value)
                 {
@@ -162,90 +217,50 @@ namespace ProgressiveVrLenses.Runtime
                 },
                 FormatAngle);
 
-            AddSlider("Addition (Add)", 0f, 3f, 0.1f,
+            AddParameter(parent, "Addition (Add)", 0f, 3f, 0.1f,
                 delegate { return _runtimeParameters.Add; },
                 delegate(float value) { _runtimeParameters.Add = value; },
                 FormatDiopters);
 
-            AddSlider("Corridor Length", 10f, 20f, 0.5f,
+            AddParameter(parent, "Corridor Length", 10f, 20f, 0.5f,
                 delegate { return _runtimeParameters.CorridorLengthMm; },
                 delegate(float value) { _runtimeParameters.CorridorLengthMm = value; },
                 delegate(float value) { return value.ToString("0.0") + " mm"; });
 
-            AddSlider("Fitting Height", 12f, 28f, 0.5f,
+            AddParameter(parent, "Fitting Height", 12f, 28f, 0.5f,
                 delegate { return _runtimeParameters.FittingHeightMm; },
                 delegate(float value) { _runtimeParameters.FittingHeightMm = value; },
                 delegate(float value) { return value.ToString("0.0") + " mm"; });
 
-            AddSlider("Inset Near", 0f, 4f, 0.1f,
+            AddParameter(parent, "Inset Near", 0f, 4f, 0.1f,
                 delegate { return _runtimeParameters.InsetNearMm; },
                 delegate(float value) { _runtimeParameters.InsetNearMm = value; },
                 delegate(float value) { return value.ToString("0.0") + " mm"; });
 
-            AddSlider("Headset FOV Horizontal", 80f, 130f, 1f,
+            AddParameter(parent, "Headset FOV Horizontal", 80f, 130f, 1f,
                 delegate { return _runtimeParameters.HeadsetFovHorizontalDeg; },
                 delegate(float value) { _runtimeParameters.HeadsetFovHorizontalDeg = value; },
                 FormatAngle);
 
-            AddSlider("Headset FOV Vertical", 70f, 110f, 1f,
+            AddParameter(parent, "Headset FOV Vertical", 70f, 110f, 1f,
                 delegate { return _runtimeParameters.HeadsetFovVerticalDeg; },
                 delegate(float value) { _runtimeParameters.HeadsetFovVerticalDeg = value; },
                 FormatAngle);
         }
 
-        private GameObject CreatePanel(Transform parent)
-        {
-            var panel = new GameObject("PalParameterPanel");
-            var rect = panel.AddComponent<RectTransform>();
-            panel.transform.SetParent(parent, false);
-            rect.anchorMin = new Vector2(0f, 1f);
-            rect.anchorMax = new Vector2(0f, 1f);
-            rect.pivot = new Vector2(0f, 1f);
-            rect.anchoredPosition = panelPosition;
-            rect.sizeDelta = panelSize;
-
-            var image = panel.AddComponent<Image>();
-            image.color = new Color(0f, 0f, 0f, 0.55f);
-
-            var layout = panel.AddComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(12, 12, 12, 12);
-            layout.spacing = 10f;
-            layout.childAlignment = TextAnchor.UpperLeft;
-
-            return panel;
-        }
-
-        private void CreateHeader(Transform parent)
-        {
-            var titleObj = new GameObject("Title");
-            titleObj.transform.SetParent(parent, false);
-            var text = titleObj.AddComponent<Text>();
-            text.font = _uiFont;
-            text.fontSize = 20;
-            text.alignment = TextAnchor.MiddleLeft;
-            text.color = Color.white;
-            text.text = panelTitle + " (toggle " + toggleKey + ")";
-
-            var descObj = new GameObject("Description");
-            descObj.transform.SetParent(parent, false);
-            var desc = descObj.AddComponent<Text>();
-            desc.font = _uiFont;
-            desc.fontSize = 12;
-            desc.alignment = TextAnchor.UpperLeft;
-            desc.color = new Color(1f, 1f, 1f, 0.6f);
-            desc.supportRichText = false;
-            desc.text = "Adjust prescription, corridor and headset parameters in real time.";
-        }
-
-        private void AddSlider(string label, float min, float max, float step, Func<float> getter, Action<float> setter, Func<float, string> formatter)
+        private void AddParameter(Transform parent, string label, float min, float max, float step, Func<float> getter, Action<float> setter, Func<float, string> formatter)
         {
             var row = new GameObject(label.Replace(" ", string.Empty) + "Row");
-            row.transform.SetParent(_panelRoot.transform, false);
-            var layout = row.AddComponent<VerticalLayoutGroup>();
-            layout.spacing = 4f;
-            layout.childAlignment = TextAnchor.UpperLeft;
-            layout.childForceExpandHeight = false;
-            layout.childControlHeight = true;
+            row.transform.SetParent(parent, false);
+
+            var background = row.AddComponent<Image>();
+            background.color = new Color(1f, 1f, 1f, 0.05f);
+
+            var layout = row.AddComponent<HorizontalLayoutGroup>();
+            layout.spacing = 8f;
+            layout.childAlignment = TextAnchor.MiddleLeft;
+            layout.childForceExpandWidth = true;
+            layout.childControlWidth = true;
 
             var labelObj = new GameObject("Label");
             labelObj.transform.SetParent(row.transform, false);
@@ -255,108 +270,129 @@ namespace ProgressiveVrLenses.Runtime
             labelText.alignment = TextAnchor.MiddleLeft;
             labelText.color = Color.white;
             labelText.text = label;
-
-            var sliderObj = new GameObject("Slider");
-            sliderObj.transform.SetParent(row.transform, false);
-            var sliderRect = sliderObj.AddComponent<RectTransform>();
-            sliderRect.sizeDelta = new Vector2(0f, 20f);
-
-            var sliderBackground = sliderObj.AddComponent<Image>();
-            sliderBackground.color = new Color(1f, 1f, 1f, 0.1f);
-            var slider = sliderObj.AddComponent<Slider>();
-            slider.minValue = min;
-            slider.maxValue = max;
-            slider.wholeNumbers = step >= 1f && Mathf.Approximately(step % 1f, 0f);
-
-            var fillArea = new GameObject("Fill Area");
-            fillArea.transform.SetParent(sliderObj.transform, false);
-            var fillAreaRect = fillArea.AddComponent<RectTransform>();
-            fillAreaRect.anchorMin = new Vector2(0f, 0f);
-            fillAreaRect.anchorMax = new Vector2(1f, 1f);
-            fillAreaRect.offsetMin = new Vector2(5f, 5f);
-            fillAreaRect.offsetMax = new Vector2(-5f, -5f);
-
-            var fill = new GameObject("Fill");
-            fill.transform.SetParent(fillArea.transform, false);
-            var fillImage = fill.AddComponent<Image>();
-            fillImage.color = new Color(0.35f, 0.75f, 1f, 0.8f);
-            var fillRect = fill.GetComponent<RectTransform>();
-            fillRect.anchorMin = new Vector2(0f, 0f);
-            fillRect.anchorMax = new Vector2(1f, 1f);
-            fillRect.offsetMin = Vector2.zero;
-            fillRect.offsetMax = Vector2.zero;
-
-            slider.fillRect = fillRect;
-
-            var handleSlideArea = new GameObject("Handle Slide Area");
-            handleSlideArea.transform.SetParent(sliderObj.transform, false);
-            var handleAreaRect = handleSlideArea.AddComponent<RectTransform>();
-            handleAreaRect.anchorMin = new Vector2(0f, 0f);
-            handleAreaRect.anchorMax = new Vector2(1f, 1f);
-            handleAreaRect.offsetMin = new Vector2(5f, 5f);
-            handleAreaRect.offsetMax = new Vector2(-5f, -5f);
-
-            var handle = new GameObject("Handle");
-            handle.transform.SetParent(handleSlideArea.transform, false);
-            var handleImage = handle.AddComponent<Image>();
-            handleImage.color = new Color(1f, 1f, 1f, 0.9f);
-            var handleRect = handle.GetComponent<RectTransform>();
-            handleRect.sizeDelta = new Vector2(18f, 18f);
-
-            slider.targetGraphic = handleImage;
-            slider.handleRect = handleRect;
+            var labelLayout = labelObj.AddComponent<LayoutElement>();
+            labelLayout.flexibleWidth = 1f;
+            labelLayout.minWidth = 120f;
 
             var valueObj = new GameObject("Value");
             valueObj.transform.SetParent(row.transform, false);
             var valueText = valueObj.AddComponent<Text>();
             valueText.font = _uiFont;
-            valueText.fontSize = 12;
+            valueText.fontSize = 14;
             valueText.alignment = TextAnchor.MiddleRight;
-            valueText.color = new Color(0.8f, 0.95f, 1f, 0.9f);
+            valueText.color = new Color(0.8f, 0.95f, 1f, 0.95f);
+            var valueLayout = valueObj.AddComponent<LayoutElement>();
+            valueLayout.minWidth = 110f;
+            valueLayout.flexibleWidth = 0f;
 
-            var binding = new SliderBinding
+            var entry = new ParameterEntry
             {
-                slider = slider,
-                valueText = valueText,
+                label = label,
+                min = Mathf.Min(min, max),
+                max = Mathf.Max(min, max),
+                step = Mathf.Max(step, 0.0001f),
                 getter = getter,
                 setter = setter,
-                step = step,
-                formatter = formatter
+                formatter = formatter,
+                background = background,
+                labelText = labelText,
+                valueText = valueText
             };
 
-            slider.onValueChanged.AddListener(delegate(float rawValue) { OnSliderChanged(binding, rawValue); });
-            _bindings.Add(binding);
+            _entries.Add(entry);
         }
 
-        private void OnSliderChanged(SliderBinding binding, float rawValue)
+        private void HandleSelectionInput()
         {
-            if (_applying)
+            if (_entries.Count == 0)
                 return;
 
-            var quantized = Quantize(rawValue, binding.step);
-            if (!Mathf.Approximately(quantized, rawValue))
-            {
-                _applying = true;
-                binding.slider.value = quantized;
-                _applying = false;
-            }
+            var previousIndex = _selectedIndex;
 
-            binding.setter(quantized);
-            binding.valueText.text = binding.formatter != null ? binding.formatter(quantized) : quantized.ToString("0.00");
-            ApplyParameters();
+            if (Input.GetKeyDown(KeyCode.UpArrow))
+                _selectedIndex = (_selectedIndex - 1 + _entries.Count) % _entries.Count;
+            else if (Input.GetKeyDown(KeyCode.DownArrow))
+                _selectedIndex = (_selectedIndex + 1) % _entries.Count;
+
+            if (previousIndex != _selectedIndex)
+                UpdateSelectionHighlight();
         }
 
-        private void RefreshUi()
+        private void HandleAdjustmentInput()
         {
-            _applying = true;
-            for (var i = 0; i < _bindings.Count; i++)
+            if (_entries.Count == 0)
+                return;
+
+            if (Input.GetKeyDown(KeyCode.LeftArrow))
+                StartAdjust(-1);
+            else if (Input.GetKeyDown(KeyCode.RightArrow))
+                StartAdjust(1);
+
+            if (Input.GetKeyUp(KeyCode.LeftArrow) && _adjustDirection == -1)
+                StopAdjust();
+            if (Input.GetKeyUp(KeyCode.RightArrow) && _adjustDirection == 1)
+                StopAdjust();
+
+            if (_adjustDirection != 0 && Time.unscaledTime >= _nextAdjustTime)
             {
-                var binding = _bindings[i];
-                var value = binding.getter();
-                binding.slider.value = value;
-                binding.valueText.text = binding.formatter != null ? binding.formatter(value) : value.ToString("0.00");
+                ApplyAdjustment(_adjustDirection);
+                _nextAdjustTime = Time.unscaledTime + repeatDelay;
             }
-            _applying = false;
+        }
+
+        private void StartAdjust(int direction)
+        {
+            _adjustDirection = direction;
+            ApplyAdjustment(direction);
+            _nextAdjustTime = Time.unscaledTime + initialRepeatDelay;
+        }
+
+        private void StopAdjust()
+        {
+            _adjustDirection = 0;
+        }
+
+        private void ApplyAdjustment(int direction)
+        {
+            var entry = _entries[_selectedIndex];
+            var current = entry.getter();
+            var delta = entry.step * direction;
+            var target = Mathf.Clamp(Quantize(current + delta, entry.step), entry.min, entry.max);
+
+            if (!Mathf.Approximately(current, target))
+            {
+                entry.setter(target);
+                ApplyParameters();
+            }
+        }
+
+        private void RefreshUi(bool force)
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                var entry = _entries[i];
+                var value = entry.getter();
+                var formatted = entry.formatter != null ? entry.formatter(value) : value.ToString("0.00");
+
+                if (force || entry.lastValue != value || entry.lastFormatted != formatted)
+                {
+                    entry.valueText.text = formatted;
+                    entry.lastValue = value;
+                    entry.lastFormatted = formatted;
+                    _entries[i] = entry;
+                }
+            }
+        }
+
+        private void UpdateSelectionHighlight()
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                var entry = _entries[i];
+                entry.background.color = i == _selectedIndex
+                    ? new Color(0.2f, 0.55f, 0.9f, 0.35f)
+                    : new Color(1f, 1f, 1f, 0.05f);
+            }
         }
 
         private void ApplyParameters()
@@ -384,24 +420,20 @@ namespace ProgressiveVrLenses.Runtime
             return value.ToString("0") + " deg";
         }
 
-        private void EnsureEventSystem()
+        private struct ParameterEntry
         {
-            if (EventSystem.current != null)
-                return;
-
-            var eventSystem = new GameObject("EventSystem");
-            eventSystem.AddComponent<EventSystem>();
-            eventSystem.AddComponent<StandaloneInputModule>();
-        }
-
-        private class SliderBinding
-        {
-            public Slider slider;
-            public Text valueText;
+            public string label;
+            public float min;
+            public float max;
+            public float step;
             public Func<float> getter;
             public Action<float> setter;
-            public float step;
             public Func<float, string> formatter;
+            public Image background;
+            public Text labelText;
+            public Text valueText;
+            public float lastValue;
+            public string lastFormatted;
         }
     }
 }
