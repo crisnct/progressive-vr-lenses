@@ -31,18 +31,19 @@ namespace ProgressiveVrLenses.Optics
             profile.RightEyeMagnificationMap = CreateMapTexture(mapResolution, "PAL_OD_Mag");
             profile.LeftEyeMagnificationMap = CreateMapTexture(mapResolution, "PAL_OS_Mag");
 
-            using var rightData = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob);
-            using var leftData = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob);
-            using var rightMag = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob);
-            using var leftMag = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob);
+            using (var rightData = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob))
+            using (var leftData = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob))
+            using (var rightMag = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob))
+            using (var leftMag = new NativeArray<float4>(mapResolution.x * mapResolution.y, Allocator.TempJob))
+            {
+                FillLensData(parameters.RightEye, parameters, rightData, rightMag, true);
+                FillLensData(parameters.LeftEye, parameters, leftData, leftMag, false);
 
-            FillLensData(parameters.RightEye, parameters, rightData, rightMag, true);
-            FillLensData(parameters.LeftEye, parameters, leftData, leftMag, false);
-
-            ApplyToTexture(profile.RightEyeMap, rightData);
-            ApplyToTexture(profile.LeftEyeMap, leftData);
-            ApplyToTexture(profile.RightEyeMagnificationMap, rightMag);
-            ApplyToTexture(profile.LeftEyeMagnificationMap, leftMag);
+                ApplyToTexture(profile.RightEyeMap, rightData);
+                ApplyToTexture(profile.LeftEyeMap, leftData);
+                ApplyToTexture(profile.RightEyeMagnificationMap, rightMag);
+                ApplyToTexture(profile.LeftEyeMagnificationMap, leftMag);
+            }
 
             return profile;
         }
@@ -143,7 +144,7 @@ namespace ProgressiveVrLenses.Optics
     [Serializable]
     public class PalMapSettings
     {
-        public Vector2Int TextureResolution = new(512, 512);
+        public Vector2Int TextureResolution = new Vector2Int(512, 512);
         public AnimationCurve CorridorProfile = AnimationCurve.Linear(0f, 0f, 1f, 1f);
         public float ReferenceCorridorLengthMm = 14f;
         public float AstigmatismFalloff = 2.5f;

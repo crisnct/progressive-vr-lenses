@@ -44,7 +44,7 @@ namespace ProgressiveVrLenses.Optics
         public float HeadsetIpdMm = 63f;
         public float HeadsetFovHorizontalDeg = 100f;
         public float HeadsetFovVerticalDeg = 90f;
-        public Vector2Int EyeTextureResolution = new(2048, 2048);
+        public Vector2Int EyeTextureResolution = new Vector2Int(2048, 2048);
 
         [Header("Runtime")]
         public bool UseEyeTracking;

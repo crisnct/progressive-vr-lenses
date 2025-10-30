@@ -1,0 +1,9 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+.idea
+/copilot.data.migration.agent.xml
+/misc.xml
+/modules.xml
+/progressive-vr-lenses.iml
+/vcs.xml
