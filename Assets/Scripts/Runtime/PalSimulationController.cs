@@ -17,6 +17,9 @@ namespace ProgressiveVrLenses.Runtime
         private PalMapGenerator _mapGenerator;
         private PalSimulationRenderPass _renderPass;
 
+        public PalLensProfile ActiveProfile => _activeProfile;
+        public PalProfileParameters DefaultParameters => defaultParameters;
+
         private void Awake()
         {
             _mapGenerator = new PalMapGenerator(mapSettings);
@@ -26,8 +29,16 @@ namespace ProgressiveVrLenses.Runtime
 
         public void UpdateProfile(PalProfileParameters parameters)
         {
-            _activeProfile = _mapGenerator.Generate(parameters);
-            _renderPass.SetLensProfile(_activeProfile);
+            var newProfile = _mapGenerator.Generate(parameters);
+            var oldProfile = _activeProfile;
+
+            _activeProfile = newProfile;
+            if (_renderPass != null)
+            {
+                _renderPass.SetLensProfile(_activeProfile);
+            }
+
+            ReleaseProfile(oldProfile);
         }
 
         private void GenerateDefaultProfile()
@@ -38,6 +49,7 @@ namespace ProgressiveVrLenses.Runtime
                 return;
             }
 
+            ReleaseProfile(_activeProfile);
             _activeProfile = _mapGenerator.Generate(defaultParameters);
         }
 
@@ -98,6 +110,7 @@ namespace ProgressiveVrLenses.Runtime
         {
             RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
             _renderPass?.Dispose();
+            ReleaseProfile(_activeProfile);
         }
 
         [System.Serializable]
@@ -112,6 +125,26 @@ namespace ProgressiveVrLenses.Runtime
             public string label;
             public int size;
             public float[] kernelData;
+        }
+
+        private void ReleaseProfile(PalLensProfile profile)
+        {
+            if (profile == null)
+                return;
+
+            DestroyTexture(profile.RightEyeMap);
+            DestroyTexture(profile.LeftEyeMap);
+            DestroyTexture(profile.RightEyeMagnificationMap);
+            DestroyTexture(profile.LeftEyeMagnificationMap);
+            UnityEngine.Object.Destroy(profile);
+        }
+
+        private static void DestroyTexture(Texture texture)
+        {
+            if (texture != null)
+            {
+                UnityEngine.Object.Destroy(texture);
+            }
         }
     }
 }
